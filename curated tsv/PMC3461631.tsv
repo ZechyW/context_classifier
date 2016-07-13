@@ -254,7 +254,7 @@
 254	uaz:UA-ORG-623	neurons	e96,e97,e98,c11	c11	In addition to R-Ras , Sema4D and plexin-B1 can also suppress M-Ras activity , 	In addition to R-Ras , Sema4D and plexin-B1 can also suppress M-Ras activity , which results in an inhibition of dendritic outgrowth and branching in primary cortical neurons .
 255						Remarkably , this signaling was found to induce a suppression of ERK activity , though the mechanism remains known .
 256			e99	c12	It is notable that a recent study has reported Rap1 as a novel substrate for the GAP activity mediated by plexin-B1 .	It is notable that a recent study has reported Rap1 as a novel substrate for the GAP activity mediated by plexin-B1 .
-257	UA-CT-30004	astrocytomas	c12			Rap1 overexpression was observed in astrocytomas of all malignancy grades , and was 2 to 3 folds higher in grade IV GBMs than in lower grades or non neoplastic brain .
+257	uaz:UA-CT-30004	astrocytomas	c12			Rap1 overexpression was observed in astrocytomas of all malignancy grades , and was 2 to 3 folds higher in grade IV GBMs than in lower grades or non neoplastic brain .
 258						The effect of GAP activity of plexin-B on Rap1 in the control of glioma progression , if any , warrants further investigations .
 259						6 .
 260						Coupling of Plexin-B with c-Met and ErbB2 as Coreceptors
