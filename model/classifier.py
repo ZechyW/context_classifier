@@ -42,13 +42,20 @@ def createFeatures(datum, tsv, annotationData):
         else:
             return section
 
-    # Distance in sections
     sections = annotationData['sections']
     titles = annotationData['titles']
     citations = annotationData['citations']
     docnums = annotationData['docnums']
+    postags = annotationData['postags']
+    deps = annotationData['deps']
+    disc = annotationData['disc']
+    sentences = annotationData['sentences']
 
+    # POS Tags
+    ctxTag = postags[datum.ctxIx][datum.ctxToken] if datum.ctxIx in postags else None
+    evtTag = postags[datum.evtIx][datum.evtToken] if datum.evtIx in postags else None
 
+    # Distance in sections
     secSlice = sections[datum.evtIx:datum.ctxIx+1]
     changes = 0
     if len(secSlice) > 0:
@@ -61,25 +68,43 @@ def createFeatures(datum, tsv, annotationData):
     # Distance in "paragraphs" (number of docs)
     distanceDocs = abs(docnums[datum.ctxIx] - docnums[datum.evtIx])
 
+    # Context type, which is basically the KB where it was grounded from
+    cid = datum.ctxGrounded
+    if cid.startswith('TAXONOMY'):
+        ctxType = 'Species'
+    elif cid.startswith('TISSUELIST'):
+        ctxType = 'Tissue'
+    elif 'UA-CLINE' in cid:
+        ctxType = 'CellLine'
+    elif 'UA-CT' in cid:
+        ctxType = 'CellType'
+    elif 'UA-ORG' in cid:
+        ctxType = 'Tissue'
+    else:
+        raise Exception("Undefined context type")
+
+
     # Location relative
     features = {
-        'distance':abs(datum.evtIx - datum.ctxIx),
-        'distanceDocs':distanceDocs,
+        'distance':'distsents:%i' % abs(datum.evtIx - datum.ctxIx),
+        'distanceDocs':'distdocs:%i' % distanceDocs,
         'sameSection':changes == 0,
         'evtFirst':(datum.evtIx < datum.ctxIx),
         'sameLine':(datum.evtIx == datum.ctxIx),
-        # 'ctxType':datum.ctx[0].upper(),
+        # 'ctxType':ctxType
         'ctxSecitonType':sectionType(sections[datum.ctxIx]),
         # 'evtSecitonType':sectionType(sections[datum.ctxIx]),
         'ctxInTitle':titles[datum.ctxIx],
         # 'evtHasCitation':citations[datum.evtIx],
         'ctxHasCitation':citations[datum.ctxIx],
         # 'ctxInAbstract':sectionType(sections[datum.ctxIx]) == 'abstract',
-        'sameDocId':docnums[datum.ctxIx] == docnums[datum.evtIx]
+        'sameDocId':docnums[datum.ctxIx] == docnums[datum.evtIx],
+        'ctxTag':ctxTag,
+        'evtTag':evtTag,
     }
 
-    # ret = features
-    ret = feda(datum.ctx[0].upper(), features)
+    ret = features
+    # ret = feda(ctxType, features)
     return ret
 
 # Frustratingly easy domain adaptation

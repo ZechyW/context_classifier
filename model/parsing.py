@@ -6,12 +6,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import itertools as it
+import operator
+import networkx as nx
 from random import shuffle
 from collections import defaultdict
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import normalize
 from sklearn import cross_validation, metrics
 from sklearn.feature_extraction import DictVectorizer
+from model import triggers
 
 EVAL1="ref"
 EVAL2="sentence"
@@ -19,6 +22,9 @@ EVAL2="sentence"
 NO=0
 RELABEL=1
 EXCLUDE=2
+DEBUG=False
+
+
 
 def get_pmcid(name):
     ''' returns the pmcid out of a tsv file name '''
@@ -30,17 +36,21 @@ class Datum(object):
     ''' Represents an event/candidate context mention pair '''
 
 
-
-    def __init__(self, namespace, evtIx, ctxIx, ctx, ctxGrounded, evt, label, golden):
+    def __init__(self, namespace, evtIx, ctxIx, ctx, ctxGrounded, ctxToken, evt, evtToken, label, golden):
         self.namespace = namespace
         self.evtIx = evtIx
         self.ctxIx = ctxIx
         self.ctx = ctx
+        self.ctxToken = ctxToken
         self.label = label
         self.evt = evt
+        self.evtToken = evtToken
         self.ctxGrounded = ctxGrounded
         self.golden = golden
         self._hash = None
+        self.tsv = None
+        self.annotationData = None
+        self.vector = None
 
     def __eq__(self, other):
         if isinstance(other, Datum):
@@ -48,8 +58,10 @@ class Datum(object):
                 self.evtIx == other.evtIx and \
                 self.ctxIx == other.ctxIx and \
                 self.evt == other.evt and \
-                self.ctx == other.ctx:
-                #self.ctxGrounded == other.ctxGrounded:
+                self.ctx == other.ctx and \
+                self.evtToken == other.evtToken and \
+                self.ctxToken == other.ctxToken and \
+                self.ctxGrounded == other.ctxGrounded:
                 return True
             else:
                 return False
@@ -63,14 +75,20 @@ class Datum(object):
         if self._hash is None:
             self._hash = hash(self.namespace) + \
                 hash('EvtIx %i' % self.evtIx) + \
-                hash('EvtIx %i' % self.ctxIx) + \
+                hash('CtxIx %i' % self.ctxIx) + \
                 hash(self.ctx) + \
-                hash(self.evt)
+                hash(self.evt) + \
+                hash('EvtToken %i' % self.ctxToken) + \
+                hash('CtxToken %i' % self.evtToken) + \
+                hash(self.ctxGrounded)
 
         return self._hash
 
+    def __index__(self):
+        return self.__hash__()
+
     def __str__(self):
-        return "%s line %i %s %s %s" % (self.namespace, self.evtIx, self.evt, self.ctx, self.ctxGrounded)
+        return "%s line %i %i %s %s %i %i %s %i %i" % (self.namespace, self.evtIx, self.evtToken, self.evt, self.ctx, self.ctxIx, self.ctxToken, self.ctxGrounded, self.label, self.golden)
 
     def __repr__(self):
         return str(self)
@@ -99,6 +117,9 @@ def extractData(tsv, name, annotationData, true_only=False):
         return len(s) > 0 and not isEvent(s)
 
     sections = annotationData['real_sections']
+    manual_ctx = annotationData['manual_context_intervals']
+    event_triggers = annotationData['manual_event_triggers']
+    sentences = annotationData['sentences']
 
     events, context = [], []
     line_counter = 0
@@ -126,30 +147,45 @@ def extractData(tsv, name, annotationData, true_only=False):
     eLines = {e[0]:e[1] for e in events}
     cLines = {c[0]:(c[1], c[2]) for c in context}
 
+    # Build the manual event token indices dictionary
+    manual_evt = {}
+    for line_num, items in it.groupby(eLines.iteritems(), lambda x: x[1]):
+        sentence = sentences[line_num]
+        trigger_nums = find_evt_anchors(sentence, triggers)
+
+        event_ids = [i[0] for i in items]
+
+        if len(trigger_nums) < len(event_ids):
+            if DEBUG:
+                print 'DEBUG: %s Line %i has fewer triggers than events' % (name ,line_num)
+
+        for eid, tn in zip(event_ids, trigger_nums):
+            manual_evt[eid] = tn
+
     # Generate negative examples
     sortedEvents = sorted(events, key=lambda x: x[0])
     groups = {k:list({x[2] for x in g}) for k, g in itertools.groupby(sortedEvents, key=lambda x: x[0])}
 
     sortedContext = [c[0] for c in sorted(context, key=lambda x: x[1])]
 
-    def getOtherContext(location, excluded, num=100):
-        ''' Pick randomly another context with a probability proportional to it's distance from pivot '''
-
-        candidateContexts = [(k, abs(v[0]-location)) for k, v in cLines.iteritems() if k not in excluded]
-        if len(candidateContexts) > 0:
-            probs = np.asarray([x[1] for x in candidateContexts], dtype=float)
-            probs /= probs.sum()
-
-            choices = np.random.choice(len(candidateContexts), num if len(candidateContexts) > num else len(candidateContexts), p=probs, replace=False)
-
-            # TODO: Really fix this!!
-            x = filter(lambda a: not a.isdigit(), {candidateContexts[choice][0] for choice in choices})
-            # for a in x:
-            #     if a.isdigit():
-            #         print x
-            return x
-        else:
-            return None
+    # def getOtherContext(location, excluded, num=100):
+    #     ''' Pick randomly another context with a probability proportional to it's distance from pivot '''
+    #
+    #     candidateContexts = [(k, abs(v[0]-location)) for k, v in cLines.iteritems() if k not in excluded]
+    #     if len(candidateContexts) > 0:
+    #         probs = np.asarray([x[1] for x in candidateContexts], dtype=float)
+    #         probs /= probs.sum()
+    #
+    #         choices = np.random.choice(len(candidateContexts), num if len(candidateContexts) > num else len(candidateContexts), p=probs, replace=False)
+    #
+    #         # TODO: Really fix this!!
+    #         x = filter(lambda a: not a.isdigit(), {candidateContexts[choice][0] for choice in choices})
+    #         # for a in x:
+    #         #     if a.isdigit():
+    #         #         print x
+    #         return x
+    #     else:
+    #         return None
 
     def getAllOtherContext(location, excluded):
         ''' Pick all the other contexts from Xia's annotations '''
@@ -167,13 +203,28 @@ def extractData(tsv, name, annotationData, true_only=False):
 
 
     added = set()
+    missing_manual_ctx = set()
     for e in events:
         evt, line, ctx = e
         if (evt, ctx) not in added:
             # Get the context line
             try:
                 cLine, cGrounding = cLines[ctx]
-                true.append(Datum(name, line, cLine, ctx, cGrounding, evt, 1, golden=True))
+
+                try:
+                    ctx_token = manual_ctx[ctx]
+                    try:
+                        evt_token = manual_evt[evt]
+                        true.append(Datum(name, line, cLine, ctx, cGrounding, ctx_token, evt, evt_token, 1, golden=True))
+                    except:
+                        if DEBUG:
+                            missing_manual_ctx.add("DEBUG: Manual anchor evt missing %s %s" % (evt, name))
+                        # missing_manual_ctx.add(sentences[line])
+                except:
+                    # pass
+                    if DEBUG:
+                        missing_manual_ctx.add("DEBUG: Manual anchor ctx missing %s %s" % (ctx, name))
+
             except:
                 print "Key error %s %s" % (ctx, name)
 
@@ -184,42 +235,46 @@ def extractData(tsv, name, annotationData, true_only=False):
 
             added.add((evt, ctx))
 
-            if not true_only:
-                # Pick a negative example
-                # ctx2s = getOtherContext(line, localContext)
-                ctx2s = getAllOtherContext(line, localContext)
+            # if not true_only:
+            #     # Pick a negative example
+            #     # ctx2s = getOtherContext(line, localContext)
+            #     ctx2s = getAllOtherContext(line, localContext)
+            #
+            #     if ctx2s is not None:
+            #         for ctx2 in ctx2s:
+            #             try:
+            #                 cLine2, cGrounding2 = cLines[ctx2]
+            #                 true.append(Datum(name, line, cLine2, ctx2, cGrounding2, manual_ctx[ctx2], evt, manual_evt[evt], 0, golden=False))
+            #             except e:
+            #                 print e
 
-                if ctx2s is not None:
-                    for ctx2 in ctx2s:
-                        try:
-                            cLine2, cGrounding2 = cLines[ctx2]
-                            true.append(Datum(name, line, cLine2, ctx2, cGrounding2, evt, 0, golden=False))
-                        except e:
-                            print e
+    for s in missing_manual_ctx: print s
 
     return true+false
 
 def generateNegativesFromNER(positives, annotationData, relabeling):
     ''' Generates all the negative examples out of the annotation data '''
     mentions = annotationData['mentions']
+
     # Generate a context label for contex
     alternatives = {}
     offset = 9000
+
 
     #TODO: Check this routine!! the CTX IX is WRONG!!
     for k, v in enumerate(mentions):
         for i in v:
             start, end, cid = i
             # Figure out the context type
-            if 'UA-ORG' in cid:
+            if cid.startswith('uaz:UA-ORG'):
                 ctype = 'T'
-            elif 'UA-CLine' in cid:
+            elif cid.startswith('uaz:UA-CLine' ):
                 ctype = 'C'
-            elif 'taxonomy' in cid:
+            elif cid.startswith('taxonomy:'):
                 ctype = 'S'
-            elif 'UA-CT' in cid:
+            elif cid.startswith('uaz:UA-CT'):
                 ctype = 'C'
-            elif 'TS-' in cid:
+            elif cid.startswith('tissuelist:TS-'):
                 ctype = 'C'
             else:
                 print cid
@@ -229,15 +284,17 @@ def generateNegativesFromNER(positives, annotationData, relabeling):
             if ctype == 'X':
                 continue
 
-            alternatives['%s%i' % (ctype, offset)] = (k, cid)
+            alternatives['%s%i' % (ctype, offset)] = (k, cid, start)
             offset += 1
+
 
 
     negatives = []
     for datum in positives:
         for alternative, val in alternatives.iteritems():
-            ix, cid = val
-            if datum.ctxIx != ix or datum.ctx[0].upper() != alternative[0].upper():
+            ix, cid, start = val
+            # if datum.ctxIx != ix and datum.ctxGrounded.upper() != cid.upper():
+            if datum.ctxIx != ix and datum.ctxToken != start:
                 # Do the relabeling
                 if relabeling != NO:
                     label = 1 if cid.upper() == datum.ctxGrounded else 0
@@ -248,13 +305,25 @@ def generateNegativesFromNER(positives, annotationData, relabeling):
                 if label == EXCLUDE:
                     continue
 
-                new_datum = Datum(datum.namespace, datum.evtIx, ix, alternative.upper(), cid.upper(), datum.evt, label, golden=False)
+                new_datum = Datum(datum.namespace, datum.evtIx, ix, alternative.upper(), cid.upper(), int(start), datum.evt, datum.evtToken, label, golden=False)
                 negatives.append(new_datum)
 
-    return negatives
+
+
+    return list(set(negatives))
 
 not_permited_context = {'go', 'uniprot'}
 not_permited_words = {'mum', 'hand', 'gatekeeper', 'muscle', 'spine', 'breast', 'head', 'neck', 'arm', 'leg'}
+
+def map_2_filtered_ix(i, real_sections):
+    ''' gets the correct index of the line after filtering out the figures '''
+
+    sec_slice = real_sections[:i+1]
+
+    figs = filter(lambda s: s.startswith('fig'), sec_slice)
+
+    return i - len(figs)
+
 def extractAnnotationData(pmcid, annDir):
     ''' Extracts data from annotations into a dictionary '''
 
@@ -280,13 +349,38 @@ def extractAnnotationData(pmcid, annDir):
     with open(fdocnums) as f:
         docnums = map(lambda x: x[1], filter(lambda x: not x[0].startswith('fig'), zip(real_sections, [int(l[:-1]) for l in f])))
 
+    fpostags = os.path.join(pdir, 'pos.txt')
+    with open(fpostags) as f:
+        postags = {int(k):v.split(' ') for k,v in [l[:-1].split('\t') for l in f]}
+
+    fdeps = os.path.join(pdir, 'deps.txt')
+    with open(fdeps) as f:
+        # The file has an edge_list format to be parsed by networkx
+        lines = [l[:-1].split('\t') for l in f]
+        # Group the entries by their sentence index
+        gb = it.groupby(lines, operator.itemgetter(0))
+        # Create a networkx graph from the edge list for each sentence
+        deps = {int(k):nx.parse_edgelist([x[1] for x in v], nodetype=int) for k, v in gb}
+
+    fdiscourse = os.path.join(pdir, 'disc.txt')
+    with open(fdiscourse) as f:
+        # Parse the tsv. Cols: 1-starting sentence, 2-finishin sentence + 1, 3-Tree-like dict
+        lines = [l[:-1].split('\t') for l in f]
+        disc = dict()
+        for s, e, t in lines:
+            s, e = int(s), int(e)
+            try:
+                t = eval(t)
+                disc[(s, e)] = t
+            except:
+                print "Error parsing discourse in %s for ix: %i-%i" % (fdiscourse, s, e)
+
     fmentions = os.path.join(pdir, 'mention_intervals.txt')
 
     with open(fmentions) as f:
         indices = defaultdict(list)
         for line in f:
 
-            # TODO: Counting problem may be here!
             line = line[:-1]
             tokens = [t for t in line.split(' ') if t != '']
             ix = int(tokens[0])
@@ -294,14 +388,18 @@ def extractAnnotationData(pmcid, annDir):
                 if real_sections[ix].startswith('fig'):
                     continue
 
+            ix = map_2_filtered_ix(ix, real_sections)
+
             intervals = []
             for t in tokens[1:]:
-                x = t.split('-', 3)
+                x = t.split('%', 3)
                 grounding_id = x[3].split(':')[0]
-                #if len(x) >= 4: # Hack to handle absence of nsID (reach grounding bug)
+
                 word = x[2].lower()
-                if grounding_id not in not_permited_context and word not in not_permited_words:
+
+                if grounding_id.lower() not in not_permited_context and word not in not_permited_words:
                     intervals.append((int(x[0]), int(x[1]), x[3]))
+
 
             # Merge succesive intervals
             merged = []
@@ -332,13 +430,35 @@ def extractAnnotationData(pmcid, annDir):
         #mentions = [indices[i] for i in xrange(max(indices.keys())+1)]
         mentions = [indices[j] for i, s, j in tuples if not s.startswith('fig')]
 
+    fmanual_context_intervals = os.path.join(pdir, 'manual_context_intervals.txt')
+    with open(fmanual_context_intervals) as f:
+        manual_context_intervals = {}
+        for l in f:
+            l = l[:-1]
+            line, interval, cid = l.split()
+            interval = interval.split('-')
+            manual_context_intervals[cid] = int(interval[0])
+
+    # Do the manual event intervals
+    fsentences = os.path.join(pdir, 'sentences.txt')
+    with open(fsentences) as f:
+        sentences = map(lambda x: x[1], filter(lambda x: not x[0].startswith('fig'), zip(real_sections, [l[:-1] for l in f])))
+        manual_event_triggers = {i:find_evt_anchors(s, triggers) for i, s in enumerate(sentences)}
+
+
     return {
         'real_sections':real_sections,
         'sections':sections,
         'titles':titles,
         'citations':citations,
         'mentions':mentions,
-        'docnums':docnums
+        'docnums':docnums,
+        'postags':postags,
+        'deps':deps,
+        'disc':disc,
+        'manual_context_intervals':manual_context_intervals,
+        'manual_event_triggers':manual_event_triggers,
+        'sentences':sentences
     }
 
 
@@ -486,5 +606,19 @@ def split_dataset(directory, training_size, num_samples=1):
                 ret.append((candidate, ids_set-candidate))
                 print size
                 break
+
+    return ret
+
+
+
+def find_evt_anchors(sentence, triggers):
+    # Split by tokens
+    tokens = sentence.strip().split()
+    ret = []
+    for i, t in enumerate(tokens):
+        t = t.lower()
+        for trigger in triggers:
+            if trigger in t:
+                ret.append(i)
 
     return ret
